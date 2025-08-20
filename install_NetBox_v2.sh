@@ -1,495 +1,379 @@
 #!/bin/bash
 
-# NetBox Installation Script for Ubuntu
-# Author: DevOps Team
-# Description: Automated installation of NetBox IPAM/DCIM tool
-# Compatible with Ubuntu 20.04+ and NetBox 3.6+
+# NetBox Troubleshooting Script
+# This script helps diagnose and fix common NetBox installation issues
 
-set -e  # Exit on any error
+set -e
 
-# Color codes for output
+# Color codes
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Configuration variables
-NETBOX_VERSION="3.6.9"
+# Configuration
 NETBOX_USER="netbox"
 NETBOX_HOME="/opt/netbox"
-POSTGRES_DB="netbox"
-POSTGRES_USER="netbox"
-POSTGRES_PASSWORD=$(openssl rand -base64 32)
-SECRET_KEY=$(python3 -c 'from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())')
-DOMAIN_NAME="localhost"
 
-# Logging function
-log() {
-    echo -e "${GREEN}[INFO]${NC} $1"
-}
+# Logging functions
+log() { echo -e "${GREEN}[INFO]${NC} $1"; }
+warn() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-warn() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
-}
-
-error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
-
-# Check if running as root (should run as regular user with sudo)
-if [ "$EUID" -eq 0 ]; then
-    error "This script should not be run as root for security reasons."
-    warn "Please run as a regular user with sudo privileges."
-    echo -e "${BLUE}[INFO]${NC} Example: ./install_netbox.sh"
-    exit 1
-fi
-
-# Check if user has sudo privileges
-if ! sudo -n true 2>/dev/null; then
-    error "This user doesn't have sudo privileges."
-    warn "Please run with a user that has sudo access."
-    echo -e "${BLUE}[INFO]${NC} Add user to sudo group: sudo usermod -aG sudo \$USER"
-    exit 1
-fi
-
-# Check Ubuntu version
-check_ubuntu_version() {
-    log "Checking Ubuntu version..."
-    if ! lsb_release -d | grep -q "Ubuntu"; then
-        error "This script is designed for Ubuntu Linux."
-        exit 1
+# Check if Django module exists
+fix_django_error() {
+    echo "================================================"
+    log "Fixing Django Module Error..."
+    echo "================================================"
+    
+    # Check if virtual environment exists
+    if [ ! -d "$NETBOX_HOME/venv" ]; then
+        error "Virtual environment not found at $NETBOX_HOME/venv"
+        log "Creating virtual environment..."
+        sudo -u $NETBOX_USER python3 -m venv $NETBOX_HOME/venv
     fi
     
-    UBUNTU_VERSION=$(lsb_release -rs)
-    if [[ $(echo "$UBUNTU_VERSION < 20.04" | bc -l) -eq 1 ]]; then
-        error "Ubuntu 20.04 or higher is required."
-        exit 1
-    fi
-    
-    log "Ubuntu $UBUNTU_VERSION detected - OK"
-}
-
-# Update system packages
-update_system() {
-    log "Updating system packages..."
-    sudo apt update && sudo apt upgrade -y
-    sudo apt install -y wget curl git vim software-properties-common apt-transport-https ca-certificates gnupg lsb-release bc
-}
-
-# Install Python and dependencies
-install_python() {
-    log "Installing Python and dependencies..."
-    sudo apt install -y python3 python3-pip python3-venv python3-dev build-essential libxml2-dev libxslt1-dev libffi-dev libpq-dev libssl-dev zlib1g-dev
-    
-    # Verify Python version
-    PYTHON_VERSION=$(python3 --version | cut -d' ' -f2 | cut -d'.' -f1,2)
-    log "Python $PYTHON_VERSION installed"
-}
-
-# Install and configure PostgreSQL
-install_postgresql() {
-    log "Installing PostgreSQL..."
-    sudo apt install -y postgresql postgresql-contrib
-    
-    # Start and enable PostgreSQL
-    sudo systemctl start postgresql
-    sudo systemctl enable postgresql
-    
-    log "Configuring PostgreSQL database..."
-    sudo -u postgres psql -c "CREATE DATABASE $POSTGRES_DB;"
-    sudo -u postgres psql -c "CREATE USER $POSTGRES_USER WITH ENCRYPTED PASSWORD '$POSTGRES_PASSWORD';"
-    sudo -u postgres psql -c "ALTER USER $POSTGRES_USER CREATEDB;"
-    sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $POSTGRES_DB TO $POSTGRES_USER;"
-    
-    log "PostgreSQL configured successfully"
-}
-
-# Install Redis
-install_redis() {
-    log "Installing Redis..."
-    sudo apt install -y redis-server
-    
-    # Configure Redis
-    sudo sed -i 's/^# maxmemory <bytes>/maxmemory 512mb/' /etc/redis/redis.conf
-    sudo sed -i 's/^# maxmemory-policy noeviction/maxmemory-policy allkeys-lru/' /etc/redis/redis.conf
-    
-    sudo systemctl restart redis-server
-    sudo systemctl enable redis-server
-    
-    log "Redis configured successfully"
-}
-
-# Create NetBox user
-create_netbox_user() {
-    log "Creating NetBox system user..."
-    if ! id "$NETBOX_USER" &>/dev/null; then
-        sudo adduser --system --group $NETBOX_USER --home $NETBOX_HOME --shell /bin/bash
-        log "NetBox user created: $NETBOX_USER"
+    # Check if Django is installed
+    if ! sudo -u $NETBOX_USER $NETBOX_HOME/venv/bin/python -c "import django" 2>/dev/null; then
+        warn "Django not found in virtual environment"
+        log "Installing Django..."
+        
+        # Upgrade pip first
+        sudo -u $NETBOX_USER $NETBOX_HOME/venv/bin/pip install --upgrade pip setuptools wheel
+        
+        # Install Django
+        sudo -u $NETBOX_USER $NETBOX_HOME/venv/bin/pip install Django
+        
+        # Install NetBox requirements
+        if [ -f "$NETBOX_HOME/requirements.txt" ]; then
+            log "Installing NetBox requirements..."
+            sudo -u $NETBOX_USER $NETBOX_HOME/venv/bin/pip install -r $NETBOX_HOME/requirements.txt
+        else
+            warn "Requirements file not found at $NETBOX_HOME/requirements.txt"
+        fi
     else
-        log "NetBox user already exists: $NETBOX_USER"
+        log "Django is already installed"
     fi
+    
+    # Verify Django installation
+    DJANGO_VERSION=$(sudo -u $NETBOX_USER $NETBOX_HOME/venv/bin/python -c "import django; print(django.get_version())" 2>/dev/null || echo "Unknown")
+    log "Django version: $DJANGO_VERSION"
 }
 
-# Download and install NetBox
-install_netbox() {
-    log "Downloading NetBox v$NETBOX_VERSION..."
+# Fix permissions
+fix_permissions() {
+    echo "================================================"
+    log "Fixing File Permissions..."
+    echo "================================================"
     
-    # Create NetBox directory
-    sudo mkdir -p $NETBOX_HOME
-    cd /tmp
+    # Check if netbox user exists
+    if ! id "$NETBOX_USER" &>/dev/null; then
+        error "NetBox user '$NETBOX_USER' does not exist"
+        log "Creating NetBox user..."
+        sudo adduser --system --group $NETBOX_USER --home $NETBOX_HOME --shell /bin/bash
+    fi
     
-    # Download NetBox
-    wget https://github.com/netbox-community/netbox/archive/v${NETBOX_VERSION}.tar.gz
-    sudo tar -xzf v${NETBOX_VERSION}.tar.gz -C $NETBOX_HOME --strip-components=1
-    
-    # Set ownership
+    # Fix ownership
+    log "Setting correct ownership..."
     sudo chown -R $NETBOX_USER:$NETBOX_USER $NETBOX_HOME
     
-    log "NetBox downloaded and extracted to $NETBOX_HOME"
-}
-
-# Configure NetBox
-configure_netbox() {
-    log "Configuring NetBox..."
+    # Fix permissions
+    log "Setting correct permissions..."
+    sudo chmod 755 $NETBOX_HOME
+    sudo chmod -R 755 $NETBOX_HOME/netbox
     
-    # Copy configuration template
-    sudo cp $NETBOX_HOME/netbox/netbox/configuration_example.py $NETBOX_HOME/netbox/netbox/configuration.py
+    if [ -f "$NETBOX_HOME/netbox/netbox/configuration.py" ]; then
+        sudo chmod 640 $NETBOX_HOME/netbox/netbox/configuration.py
+    fi
     
-    # Generate configuration
-    sudo tee $NETBOX_HOME/netbox/netbox/configuration.py > /dev/null <<EOF
-import os
-
-# Database configuration
-DATABASE = {
-    'NAME': '$POSTGRES_DB',
-    'USER': '$POSTGRES_USER',
-    'PASSWORD': '$POSTGRES_PASSWORD',
-    'HOST': 'localhost',
-    'PORT': '',
-    'CONN_MAX_AGE': 300,
-}
-
-# Redis configuration
-REDIS = {
-    'tasks': {
-        'HOST': 'localhost',
-        'PORT': 6379,
-        'PASSWORD': '',
-        'DATABASE': 0,
-        'SSL': False,
-    },
-    'caching': {
-        'HOST': 'localhost',
-        'PORT': 6379,
-        'PASSWORD': '',
-        'DATABASE': 1,
-        'SSL': False,
-    }
-}
-
-# Security settings
-SECRET_KEY = '$SECRET_KEY'
-ALLOWED_HOSTS = ['localhost', '127.0.0.1', '*']
-
-# Debug settings (set to False in production)
-DEBUG = False
-
-# Logging
-LOGGING = {
-    'version': 1,
-    'disable_existing_loggers': False,
-    'handlers': {
-        'file': {
-            'level': 'INFO',
-            'class': 'logging.FileHandler',
-            'filename': '$NETBOX_HOME/logs/netbox.log',
-        },
-    },
-    'loggers': {
-        'django': {
-            'handlers': ['file'],
-            'level': 'INFO',
-        },
-    }
-}
-
-# Media and static files
-MEDIA_ROOT = '$NETBOX_HOME/netbox/media'
-STATIC_ROOT = '$NETBOX_HOME/netbox/static'
-
-# Time zone
-TIME_ZONE = 'America/Sao_Paulo'
-
-# Email settings (configure as needed)
-EMAIL = {
-    'SERVER': 'localhost',
-    'PORT': 25,
-    'USERNAME': '',
-    'PASSWORD': '',
-    'USE_SSL': False,
-    'USE_TLS': False,
-    'TIMEOUT': 10,
-    'FROM_EMAIL': 'netbox@$DOMAIN_NAME',
-}
-EOF
-
-    # Set ownership of configuration
-    sudo chown $NETBOX_USER:$NETBOX_USER $NETBOX_HOME/netbox/netbox/configuration.py
-    sudo chmod 640 $NETBOX_HOME/netbox/netbox/configuration.py
+    # Create required directories
+    sudo mkdir -p $NETBOX_HOME/netbox/media
+    sudo mkdir -p $NETBOX_HOME/logs
+    sudo chown -R $NETBOX_USER:$NETBOX_USER $NETBOX_HOME/netbox/media
+    sudo chown -R $NETBOX_USER:$NETBOX_USER $NETBOX_HOME/logs
     
-    log "NetBox configuration created"
+    log "Permissions fixed successfully"
 }
 
-# Install Python dependencies
-install_python_deps() {
-    log "Installing Python dependencies..."
+# Reinstall Python dependencies
+reinstall_dependencies() {
+    echo "================================================"
+    log "Reinstalling Python Dependencies..."
+    echo "================================================"
     
-    # Create virtual environment as netbox user
+    if [ ! -f "$NETBOX_HOME/requirements.txt" ]; then
+        error "Requirements file not found at $NETBOX_HOME/requirements.txt"
+        return 1
+    fi
+    
+    # Remove existing virtual environment
+    if [ -d "$NETBOX_HOME/venv" ]; then
+        warn "Removing existing virtual environment..."
+        sudo rm -rf $NETBOX_HOME/venv
+    fi
+    
+    # Create new virtual environment
+    log "Creating new virtual environment..."
     sudo -u $NETBOX_USER python3 -m venv $NETBOX_HOME/venv
     
-    # Install requirements
-    sudo -u $NETBOX_USER $NETBOX_HOME/venv/bin/pip install --upgrade pip
+    # Install dependencies
+    log "Installing Python dependencies..."
+    sudo -u $NETBOX_USER $NETBOX_HOME/venv/bin/pip install --upgrade pip setuptools wheel
+    sudo -u $NETBOX_USER $NETBOX_HOME/venv/bin/pip install Django
     sudo -u $NETBOX_USER $NETBOX_HOME/venv/bin/pip install -r $NETBOX_HOME/requirements.txt
     
-    log "Python dependencies installed"
+    log "Dependencies reinstalled successfully"
 }
 
-# Run Django migrations and collect static files
-setup_django() {
-    log "Setting up Django database and static files..."
+# Check configuration file
+check_configuration() {
+    echo "================================================"
+    log "Checking Configuration..."
+    echo "================================================"
     
-    # Create logs directory
-    sudo mkdir -p $NETBOX_HOME/logs
-    sudo chown $NETBOX_USER:$NETBOX_USER $NETBOX_HOME/logs
+    CONFIG_FILE="$NETBOX_HOME/netbox/netbox/configuration.py"
     
-    # Run migrations
-    sudo -u $NETBOX_USER $NETBOX_HOME/venv/bin/python $NETBOX_HOME/netbox/manage.py migrate
+    if [ ! -f "$CONFIG_FILE" ]; then
+        error "Configuration file not found: $CONFIG_FILE"
+        
+        if [ -f "$NETBOX_HOME/netbox/netbox/configuration_example.py" ]; then
+            log "Creating configuration from example..."
+            sudo cp $NETBOX_HOME/netbox/netbox/configuration_example.py $CONFIG_FILE
+            sudo chown $NETBOX_USER:$NETBOX_USER $CONFIG_FILE
+            sudo chmod 640 $CONFIG_FILE
+            warn "Please edit $CONFIG_FILE with your settings"
+        else
+            error "Example configuration also not found"
+            return 1
+        fi
+    else
+        log "Configuration file exists"
+    fi
+    
+    # Test configuration syntax
+    log "Testing configuration syntax..."
+    if sudo -u $NETBOX_USER $NETBOX_HOME/venv/bin/python -c "
+import sys
+sys.path.insert(0, '$NETBOX_HOME/netbox')
+try:
+    from netbox import configuration
+    print('Configuration syntax is valid')
+except Exception as e:
+    print(f'Configuration error: {e}')
+    sys.exit(1)
+" 2>/dev/null; then
+        log "Configuration syntax is valid"
+    else
+        error "Configuration has syntax errors"
+        return 1
+    fi
+}
+
+# Check database connection
+check_database() {
+    echo "================================================"
+    log "Checking Database Connection..."
+    echo "================================================"
+    
+    # Check PostgreSQL service
+    if ! sudo systemctl is-active --quiet postgresql; then
+        warn "PostgreSQL service is not running"
+        log "Starting PostgreSQL..."
+        sudo systemctl start postgresql
+    else
+        log "PostgreSQL service is running"
+    fi
+    
+    # Test database connection (basic check)
+    if sudo -u postgres psql -l | grep -q netbox; then
+        log "NetBox database exists"
+    else
+        warn "NetBox database not found"
+        log "You may need to create the database manually"
+    fi
+}
+
+# Check Redis connection
+check_redis() {
+    echo "================================================"
+    log "Checking Redis Connection..."
+    echo "================================================"
+    
+    # Check Redis service
+    if ! sudo systemctl is-active --quiet redis-server; then
+        warn "Redis service is not running"
+        log "Starting Redis..."
+        sudo systemctl start redis-server
+    else
+        log "Redis service is running"
+    fi
+    
+    # Test Redis connection
+    if redis-cli ping | grep -q PONG; then
+        log "Redis connection successful"
+    else
+        warn "Redis connection failed"
+    fi
+}
+
+# Run Django migrations
+run_migrations() {
+    echo "================================================"
+    log "Running Django Migrations..."
+    echo "================================================"
+    
+    cd $NETBOX_HOME/netbox
+    
+    # Check migrations
+    log "Checking for pending migrations..."
+    if sudo -u $NETBOX_USER $NETBOX_HOME/venv/bin/python manage.py showmigrations --plan | grep -q "\[ \]"; then
+        log "Running migrations..."
+        sudo -u $NETBOX_USER $NETBOX_HOME/venv/bin/python manage.py migrate
+    else
+        log "No pending migrations"
+    fi
     
     # Collect static files
-    sudo -u $NETBOX_USER $NETBOX_HOME/venv/bin/python $NETBOX_HOME/netbox/manage.py collectstatic --no-input
-    
-    log "Django setup completed"
+    log "Collecting static files..."
+    sudo -u $NETBOX_USER $NETBOX_HOME/venv/bin/python manage.py collectstatic --no-input
 }
 
-# Create superuser
-create_superuser() {
-    log "Creating NetBox superuser..."
-    echo "You will now create a superuser account for NetBox."
-    sudo -u $NETBOX_USER $NETBOX_HOME/venv/bin/python $NETBOX_HOME/netbox/manage.py createsuperuser
+# Check services status
+check_services() {
+    echo "================================================"
+    log "Checking Service Status..."
+    echo "================================================"
+    
+    services=("postgresql" "redis-server" "netbox" "netbox-rq" "nginx")
+    
+    for service in "${services[@]}"; do
+        if sudo systemctl is-active --quiet $service; then
+            log "$service: Running"
+        else
+            warn "$service: Not running"
+        fi
+    done
 }
 
-# Install and configure Nginx
-install_nginx() {
-    log "Installing and configuring Nginx..."
-    sudo apt install -y nginx
+# Show logs
+show_logs() {
+    echo "================================================"
+    log "Recent NetBox Logs..."
+    echo "================================================"
     
-    # Create Nginx configuration
-    sudo tee /etc/nginx/sites-available/netbox > /dev/null <<EOF
-server {
-    listen 80;
-    server_name $DOMAIN_NAME;
+    # Show systemd logs
+    log "NetBox service logs (last 20 lines):"
+    sudo journalctl -u netbox --no-pager -n 20
     
-    client_max_body_size 25m;
+    echo ""
+    log "NetBox RQ service logs (last 10 lines):"
+    sudo journalctl -u netbox-rq --no-pager -n 10
     
-    location /static/ {
-        alias $NETBOX_HOME/netbox/static/;
-    }
-    
-    location /media/ {
-        alias $NETBOX_HOME/netbox/media/;
-    }
-    
-    location / {
-        proxy_pass http://127.0.0.1:8001;
-        proxy_set_header X-Forwarded-Host \$server_name;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_connect_timeout 300s;
-        proxy_send_timeout 300s;
-        proxy_read_timeout 300s;
-    }
-}
-EOF
-
-    # Enable site
-    sudo ln -sf /etc/nginx/sites-available/netbox /etc/nginx/sites-enabled/
-    sudo rm -f /etc/nginx/sites-enabled/default
-    
-    # Test and reload Nginx
-    sudo nginx -t
-    sudo systemctl reload nginx
-    sudo systemctl enable nginx
-    
-    log "Nginx configured successfully"
-}
-
-# Install and configure Gunicorn
-install_gunicorn() {
-    log "Installing and configuring Gunicorn..."
-    
-    # Install gunicorn in virtual environment
-    sudo -u $NETBOX_USER $NETBOX_HOME/venv/bin/pip install gunicorn
-    
-    # Create Gunicorn configuration
-    sudo tee $NETBOX_HOME/gunicorn.py > /dev/null <<EOF
-command = '$NETBOX_HOME/venv/bin/gunicorn'
-pythonpath = '$NETBOX_HOME/netbox'
-bind = '127.0.0.1:8001'
-workers = 5
-user = '$NETBOX_USER'
-timeout = 120
-max_requests = 5000
-max_requests_jitter = 500
-EOF
-
-    sudo chown $NETBOX_USER:$NETBOX_USER $NETBOX_HOME/gunicorn.py
-    
-    log "Gunicorn configured successfully"
-}
-
-# Create systemd services
-create_systemd_services() {
-    log "Creating systemd services..."
-    
-    # NetBox service
-    sudo tee /etc/systemd/system/netbox.service > /dev/null <<EOF
-[Unit]
-Description=NetBox WSGI
-Documentation=https://docs.netbox.dev/
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=exec
-User=$NETBOX_USER
-Group=$NETBOX_USER
-PIDFile=/var/tmp/netbox.pid
-WorkingDirectory=$NETBOX_HOME/netbox
-ExecStart=$NETBOX_HOME/venv/bin/gunicorn --config $NETBOX_HOME/gunicorn.py netbox.wsgi
-ExecReload=/bin/kill -s HUP \$MAINPID
-KillMode=mixed
-TimeoutStopSec=5
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    # NetBox RQ worker service
-    sudo tee /etc/systemd/system/netbox-rq.service > /dev/null <<EOF
-[Unit]
-Description=NetBox Request Queue Worker
-Documentation=https://docs.netbox.dev/
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=exec
-User=$NETBOX_USER
-Group=$NETBOX_USER
-WorkingDirectory=$NETBOX_HOME/netbox
-ExecStart=$NETBOX_HOME/venv/bin/python manage.py rqworker
-Restart=on-failure
-RestartSec=30
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    # Reload systemd and enable services
-    sudo systemctl daemon-reload
-    sudo systemctl enable netbox netbox-rq
-    
-    log "Systemd services created"
-}
-
-# Start services
-start_services() {
-    log "Starting NetBox services..."
-    sudo systemctl start netbox
-    sudo systemctl start netbox-rq
-    
-    # Check service status
-    sleep 5
-    if sudo systemctl is-active --quiet netbox; then
-        log "NetBox service started successfully"
-    else
-        error "NetBox service failed to start"
-        sudo systemctl status netbox
-        exit 1
-    fi
-    
-    if sudo systemctl is-active --quiet netbox-rq; then
-        log "NetBox RQ service started successfully"
-    else
-        error "NetBox RQ service failed to start"
-        sudo systemctl status netbox-rq
-        exit 1
+    # Show application logs if they exist
+    if [ -f "$NETBOX_HOME/logs/netbox.log" ]; then
+        echo ""
+        log "Application logs (last 10 lines):"
+        sudo tail -n 10 $NETBOX_HOME/logs/netbox.log
     fi
 }
 
-# Setup firewall
-setup_firewall() {
-    log "Configuring UFW firewall..."
-    if command -v ufw >/dev/null 2>&1; then
-        sudo ufw allow 22/tcp
-        sudo ufw allow 80/tcp
-        sudo ufw allow 443/tcp
-        sudo ufw --force enable
-        log "Firewall configured"
+# Test NetBox functionality
+test_netbox() {
+    echo "================================================"
+    log "Testing NetBox Functionality..."
+    echo "================================================"
+    
+    cd $NETBOX_HOME/netbox
+    
+    # Test Django check
+    log "Running Django system check..."
+    if sudo -u $NETBOX_USER $NETBOX_HOME/venv/bin/python manage.py check; then
+        log "Django system check passed"
     else
-        warn "UFW not installed, skipping firewall configuration"
+        error "Django system check failed"
+        return 1
+    fi
+    
+    # Test database connection
+    log "Testing database connection..."
+    if sudo -u $NETBOX_USER $NETBOX_HOME/venv/bin/python manage.py shell -c "
+from django.db import connection
+cursor = connection.cursor()
+cursor.execute('SELECT 1')
+print('Database connection successful')
+"; then
+        log "Database connection test passed"
+    else
+        error "Database connection test failed"
+        return 1
     fi
 }
 
-# Main installation function
+# Menu system
+show_menu() {
+    echo ""
+    echo "================================================"
+    echo "NetBox Troubleshooting Menu"
+    echo "================================================"
+    echo "1. Fix Django Module Error"
+    echo "2. Fix File Permissions"
+    echo "3. Reinstall Dependencies"
+    echo "4. Check Configuration"
+    echo "5. Check Database"
+    echo "6. Check Redis"
+    echo "7. Run Migrations"
+    echo "8. Check Services Status"
+    echo "9. Show Recent Logs"
+    echo "10. Test NetBox Functionality"
+    echo "11. Run All Checks"
+    echo "12. Exit"
+    echo "================================================"
+}
+
+# Run all checks
+run_all_checks() {
+    log "Running all troubleshooting checks..."
+    fix_django_error
+    fix_permissions
+    check_configuration
+    check_database
+    check_redis
+    check_services
+    test_netbox
+    log "All checks completed!"
+}
+
+# Main menu loop
 main() {
-    echo "================================================"
-    log "Starting NetBox installation..."
-    echo "================================================"
+    if [ "$EUID" -eq 0 ]; then
+        error "This script should not be run as root"
+        exit 1
+    fi
     
-    check_ubuntu_version
-    update_system
-    install_python
-    install_postgresql
-    install_redis
-    create_netbox_user
-    install_netbox
-    configure_netbox
-    install_python_deps
-    setup_django
-    create_superuser
-    install_nginx
-    install_gunicorn
-    create_systemd_services
-    start_services
-    setup_firewall
-    
-    echo ""
-    echo "================================================"
-    log "NetBox installation completed successfully!"
-    echo "================================================"
-    echo ""
-    log "Access NetBox at: http://$(hostname -I | awk '{print $1}')"
-    log "Database: $POSTGRES_DB"
-    log "Database User: $POSTGRES_USER"
-    log "Database Password: $POSTGRES_PASSWORD"
-    echo ""
-    log "Important files:"
-    log "- Configuration: $NETBOX_HOME/netbox/netbox/configuration.py"
-    log "- Logs: $NETBOX_HOME/logs/netbox.log"
-    log "- Virtual Environment: $NETBOX_HOME/venv"
-    echo ""
-    log "Useful commands:"
-    log "- Check status: sudo systemctl status netbox netbox-rq"
-    log "- View logs: sudo journalctl -u netbox -f"
-    log "- Restart services: sudo systemctl restart netbox netbox-rq"
-    echo ""
-    warn "Please save the database password in a secure location!"
-    echo "================================================"
+    while true; do
+        show_menu
+        read -p "Select an option (1-12): " choice
+        
+        case $choice in
+            1) fix_django_error ;;
+            2) fix_permissions ;;
+            3) reinstall_dependencies ;;
+            4) check_configuration ;;
+            5) check_database ;;
+            6) check_redis ;;
+            7) run_migrations ;;
+            8) check_services ;;
+            9) show_logs ;;
+            10) test_netbox ;;
+            11) run_all_checks ;;
+            12) log "Exiting..."; exit 0 ;;
+            *) error "Invalid option. Please try again." ;;
+        esac
+        
+        echo ""
+        read -p "Press Enter to continue..."
+    done
 }
 
 # Run main function
